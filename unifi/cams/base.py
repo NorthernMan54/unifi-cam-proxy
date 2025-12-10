@@ -133,7 +133,9 @@ class UnifiCamBase(metaclass=ABCMeta):
 
     # API for subclasses
     async def trigger_motion_start(
-        self, object_type: Optional[SmartDetectObjectType] = None
+        self,
+        object_type: Optional[SmartDetectObjectType] = None,
+        custom_descriptor: Optional[dict[str, Any]] = None,
     ) -> None:
         if not self._motion_event_ts:
             payload: dict[str, Any] = {
@@ -151,12 +153,20 @@ class UnifiCamBase(metaclass=ABCMeta):
                 "motionSnapshot": "",
             }
             if object_type:
+                # Build descriptors array
+                descriptors = []
+                if custom_descriptor:
+                    # Use custom descriptor if provided
+                    descriptors = [custom_descriptor]
+                
                 payload.update(
                     {
                         "objectTypes": [object_type.value],
                         "edgeType": "enter",
-                        "zonesStatus": {"0": 48},
+                        "zonesStatus": {"0": {"score": 48}},
                         "smartDetectSnapshot": "",
+                        "displayTimeoutMSec": 10000,
+                        "descriptors": descriptors,
                     }
                 )
 
@@ -184,6 +194,46 @@ class UnifiCamBase(metaclass=ABCMeta):
             except FileNotFoundError:
                 pass
 
+    async def trigger_motion_update(
+        self,
+        custom_descriptor: Optional[dict[str, Any]] = None,
+    ) -> None:
+        """Send a motion update (moving) event with updated descriptor information."""
+        if self._motion_event_ts and self._motion_object_type:
+            # Build descriptors array
+            descriptors = []
+            if custom_descriptor:
+                descriptors = [custom_descriptor]
+            
+            payload: dict[str, Any] = {
+                "clockBestMonotonic": int(self.get_uptime()),
+                "clockBestWall": int(round(self._motion_event_ts * 1000)),
+                "clockMonotonic": int(self.get_uptime()),
+                "clockStream": int(self.get_uptime()),
+                "clockStreamRate": 1000,
+                "clockWall": int(round(time.time() * 1000)),
+                "edgeType": "moving",
+                "eventId": self._motion_event_id,
+                "eventType": "motion",
+                "levels": {"0": 48},
+                "objectTypes": [self._motion_object_type.value],
+                "zonesStatus": {"0": {"score": 48}},
+                "smartDetectSnapshot": "",
+                "displayTimeoutMSec": 10000,
+                "descriptors": descriptors,
+            }
+            
+            self.logger.debug(
+                f"Triggering motion update (idx: {self._motion_event_id}) "
+                f"for {self._motion_object_type.value}"
+            )
+            await self.send(
+                self.gen_response(
+                    "EventSmartDetect",
+                    payload=payload,
+                ),
+            )
+
     async def trigger_motion_stop(self) -> None:
         motion_start_ts = self._motion_event_ts
         motion_object_type = self._motion_object_type
@@ -207,8 +257,10 @@ class UnifiCamBase(metaclass=ABCMeta):
                     {
                         "objectTypes": [motion_object_type.value],
                         "edgeType": "leave",
-                        "zonesStatus": {"0": 48},
+                        "zonesStatus": {"0": {"score": 48}},
                         "smartDetectSnapshot": "motionsnap.jpg",
+                        "displayTimeoutMSec": 10000,
+                        "descriptors": [],
                     }
                 )
             self.logger.info(
@@ -251,6 +303,7 @@ class UnifiCamBase(metaclass=ABCMeta):
         self.logger.info(
             f"Adopting with token [{self.args.token}] and mac [{self.args.mac}]"
         )
+        features = await self.get_feature_flags()
         await self.send(
             self.gen_response(
                 "ubnt_avclient_hello",
@@ -271,7 +324,7 @@ class UnifiCamBase(metaclass=ABCMeta):
                     "totalLoad": 0.5474,
                     "upgradeTimeoutSec": 150,
                     "uptime": int(self.get_uptime()),
-                    "features": await self.get_feature_flags(),
+                    "features": features,
                 },
             ),
         )
@@ -280,12 +333,13 @@ class UnifiCamBase(metaclass=ABCMeta):
         pass
 
     async def process_param_agreement(self, msg: AVClientRequest) -> AVClientResponse:
+        features = await self.get_feature_flags()
         return self.gen_response(
             "ubnt_avclient_paramAgreement",
             msg["messageId"],
             {
                 "authToken": self.args.token,
-                "features": await self.get_feature_flags(),
+                "features": features,
             },
         )
 
@@ -833,6 +887,15 @@ class UnifiCamBase(metaclass=ABCMeta):
     async def process_continuous_move(self, msg: AVClientRequest) -> None:
         return
 
+    async def process_update_face_db(self, msg: AVClientRequest) -> AVClientResponse:
+        # Return empty response to indicate no face database is available
+        # This prevents UniFi Protect from trying to fetch a non-existent file
+        return self.gen_response(
+            "UpdateFaceDBRequest",
+            msg["messageId"],
+            {},
+        )
+
     def gen_response(
         self, name: str, response_to: int = 0, payload: Optional[dict[str, Any]] = None
     ) -> AVClientResponse:
@@ -913,6 +976,28 @@ class UnifiCamBase(metaclass=ABCMeta):
             res = self.gen_response(
                 "ChangeSmartDetectSettings", response_to=m["messageId"]
             )
+        elif fn == "ChangeAudioEventsSettings":
+            res = self.gen_response(
+                "ChangeAudioEventsSettings", response_to=m["messageId"]
+            )
+        elif fn == "UpdateFaceDBRequest":
+            res = await self.process_update_face_db(m)
+        elif fn == "ChangeTalkbackSettings":
+            res = self.gen_response(
+                "ChangeTalkbackSettings", response_to=m["messageId"]
+            )
+        elif fn == "ChangeSmartMotionSettings":
+            res = self.gen_response(
+                "ChangeSmartMotionSettings", response_to=m["messageId"]
+            )
+        elif fn == "SmartMotionTest":
+            res = self.gen_response(
+                "SmartMotionTest", response_to=m["messageId"]
+            )
+        elif fn == "ChangeClarityZones":
+            res = self.gen_response(
+                "ChangeClarityZones", response_to=m["messageId"]
+            )
         elif fn == "UpdateFirmwareRequest":
             await self.process_upgrade(m)
             return True
@@ -920,6 +1005,11 @@ class UnifiCamBase(metaclass=ABCMeta):
             return True
         elif fn == "ContinuousMove":
             res = await self.process_continuous_move(m)
+        else:
+            self.logger.warning(
+                f"Received unhandled message type: {fn}. "
+                f"Message contents: {m}"
+            )
 
         if res is not None:
             await self.send(res)
@@ -975,7 +1065,7 @@ class UnifiCamBase(metaclass=ABCMeta):
                 f"Spawning ffmpeg for {stream_index} ({stream_name}): {cmd}"
             )
             self._ffmpeg_handles[stream_index] = subprocess.Popen(
-                cmd, stderr=subprocess.STDOUT, shell=True,
+                cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, shell=True,
             )
 
     def stop_video_stream(self, stream_index: str):
