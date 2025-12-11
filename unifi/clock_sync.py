@@ -3,6 +3,7 @@ Helper program to inject absolute wall clock time into FLV stream for recordings
 """
 
 import argparse
+import os
 import struct
 import sys
 import time
@@ -30,7 +31,13 @@ def write(data):
 
 
 def write_log(data):
-    sys.stderr.buffer.write(f"{data}\n".encode())
+    try:
+        pid = os.getpid()
+        with open('/tmp/clock_sync_debug.log', 'a') as f:
+            f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} [PID:{pid}] - {data}\n")
+            f.flush()
+    except Exception:
+        pass  # Silently ignore logging errors
 
 
 def write_timestamp_trailer(is_packet, ts):
@@ -50,7 +57,7 @@ def main(args):
     header = read_bytes(source, 3)
 
     if header != b"FLV":
-        print("Not a valid FLV file")
+        write_log(f"ERROR: Not a valid FLV file, got: {header.hex() if header else 'empty'}")
         return
     write(header)
 
@@ -82,7 +89,7 @@ def main(args):
 
         header = read_bytes(source, 12)
         if len(header) != 12:
-            write(header)
+            write_log(f"Stream ended or interrupted, got {len(header)} bytes instead of 12: {header.hex() if header else 'empty'}")
             return
 
         # Packet type
@@ -102,9 +109,18 @@ def main(args):
             last_ts = now
             # Insert a custom packet every so often for time synchronization
             data = FLVObject()
-            data["streamClock"] = int(timestamp)
-            data["streamClockBase"] = 0
-            data["wallClock"] = now * 1000
+            wall_clock_ms = int(now * 1000)
+            stream_clock_ms = int(timestamp)
+            # streamClockBase should be the wall clock time when stream started (streamClock = 0)
+            stream_clock_base = wall_clock_ms - stream_clock_ms
+
+            data["streamClock"] = stream_clock_ms  # same
+            data["streamClockBase"] = stream_clock_base
+            data["wallClock"] = wall_clock_ms
+            
+            # Debug logging
+            write_log(f"onClockSync: streamClock={stream_clock_ms} streamClockBase={stream_clock_base} wallClock={wall_clock_ms} (base+stream={stream_clock_base + stream_clock_ms})")
+            
             packet_to_inject = create_script_tag("onClockSync", data, timestamp)
             write(packet_to_inject)
 
