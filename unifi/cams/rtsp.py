@@ -61,7 +61,7 @@ class RTSPCam(UnifiCamBase):
             )
             self.logger.info(f"Spawning stream for snapshots: {cmd}")
             self.snapshot_stream = subprocess.Popen(
-                cmd, stderr=subprocess.STDOUT, shell=True
+                cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, shell=True
             )
 
     async def get_snapshot(self) -> Path:
