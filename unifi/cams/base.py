@@ -39,6 +39,7 @@ class UnifiCamBase(metaclass=ABCMeta):
         self._motion_event_id: int = 0
         self._motion_event_ts: Optional[float] = None
         self._motion_object_type: Optional[SmartDetectObjectType] = None
+        self._motion_last_descriptor: Optional[dict[str, Any]] = None
         self._ffmpeg_handles: dict[str, subprocess.Popen] = {}
 
         # Set up ssl context for requests
@@ -158,6 +159,8 @@ class UnifiCamBase(metaclass=ABCMeta):
                 if custom_descriptor:
                     # Use custom descriptor if provided
                     descriptors = [custom_descriptor]
+                    # Save the last descriptor for motion stop
+                    self._motion_last_descriptor = custom_descriptor
                 
                 payload.update(
                     {
@@ -204,6 +207,8 @@ class UnifiCamBase(metaclass=ABCMeta):
             descriptors = []
             if custom_descriptor:
                 descriptors = [custom_descriptor]
+                # Save the last descriptor for motion stop
+                self._motion_last_descriptor = custom_descriptor
             
             payload: dict[str, Any] = {
                 "clockBestMonotonic": int(self.get_uptime()),
@@ -234,7 +239,10 @@ class UnifiCamBase(metaclass=ABCMeta):
                 ),
             )
 
-    async def trigger_motion_stop(self) -> None:
+    async def trigger_motion_stop(
+        self,
+        custom_descriptor: Optional[dict[str, Any]] = None,
+    ) -> None:
         motion_start_ts = self._motion_event_ts
         motion_object_type = self._motion_object_type
         if motion_start_ts:
@@ -253,6 +261,13 @@ class UnifiCamBase(metaclass=ABCMeta):
                 "motionSnapshot": "motionsnap.jpg",
             }
             if motion_object_type:
+                # Build descriptors array - use custom_descriptor if provided, otherwise fall back to last saved
+                descriptors = []
+                if custom_descriptor:
+                    descriptors = [custom_descriptor]
+                elif self._motion_last_descriptor:
+                    descriptors = [self._motion_last_descriptor]
+                
                 payload.update(
                     {
                         "objectTypes": [motion_object_type.value],
@@ -260,7 +275,7 @@ class UnifiCamBase(metaclass=ABCMeta):
                         "zonesStatus": {"0": {"score": 48}},
                         "smartDetectSnapshot": "motionsnap.jpg",
                         "displayTimeoutMSec": 10000,
-                        "descriptors": [],
+                        "descriptors": descriptors,
                     }
                 )
             self.logger.info(
@@ -278,6 +293,7 @@ class UnifiCamBase(metaclass=ABCMeta):
             self._motion_event_id += 1
             self._motion_event_ts = None
             self._motion_object_type = None
+            self._motion_last_descriptor = None
 
     def update_motion_snapshot(self, path: Path) -> None:
         self._motion_snapshot = path

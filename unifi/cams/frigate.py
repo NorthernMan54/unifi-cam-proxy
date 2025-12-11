@@ -314,6 +314,14 @@ class FrigateCam(RTSPCam):
                     self.event_label = event_data["label"]
                     self.event_snapshot_ready = snapshot_ready
                     
+                    # Build final descriptor from end event data
+                    # This will be included in the "leave" event by trigger_motion_stop
+                    final_descriptor = self.build_descriptor_from_frigate_msg(
+                        frigate_msg, object_type
+                    )
+                    # Save it so trigger_motion_stop can use it
+                    self._motion_last_descriptor = final_descriptor
+                    
                     if snapshot_ready:
                         # Wait for the best snapshot to be ready before ending the motion event
                         self.logger.info(f"Frigate: Awaiting snapshot (id: {event_id})")
