@@ -11,3 +11,5 @@ MANIFEST.in
 .vscode/settings.json
 .vscode/launch.json
 /.idea/
+/node_modules
+tools/frigate-events.log
